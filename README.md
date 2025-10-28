@@ -161,7 +161,9 @@ Total packet size: 20 bytes
 
 ---
 
-## 🖥️ V+ Program Editor (New!)
+## 🖥️ Additional Tools
+
+### V+ Program Editor ⭐ NEW!
 
 **No more 25-year-old Adept software!** Edit and upload V+ programs with a modern Python tool.
 
@@ -178,6 +180,24 @@ python vplus_editor.py
 - ✅ No legacy software required!
 
 See **[VPLUS_EDITOR_GUIDE.md](VPLUS_EDITOR_GUIDE.md)** for complete documentation.
+
+### Absolute Position Mode ⭐ NEW!
+
+**Handles soft limits better!** Like 3D printer G-code with position feedback.
+
+```bash
+python cobra_jogger_absolute.py
+```
+
+**Features:**
+- ✅ Queries robot position periodically (WHERE command)
+- ✅ Absolute positioning mode (MOVE vs DMOVE)
+- ✅ Soft limits handled by controller automatically
+- ✅ Position display in GUI
+- ✅ Smoother continuous motion
+- ✅ No command accumulation
+
+See **[POSITION_CONTROL_GUIDE.md](POSITION_CONTROL_GUIDE.md)** for technical details.
 
 ---
 
