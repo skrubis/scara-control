@@ -1,6 +1,6 @@
-# Cobra Jogger - SCARA Robot Control
+# SCARA Control — Unified App
 
-Python GUI application for jogging an **Adept Cobra 600 SCARA robot** using a gamepad (PS4/Xbox controller) via serial communication with the V+ controller.
+Unified Python GUI application for the **Adept Cobra 600 SCARA robot** with a tabbed UI that combines jogging (monitor, jog server, absolute), a V+ program file manager, an always-visible serial monitor panel, and keyframe capture/playback. Supports gamepad (PS4/Xbox) and keyboard.
 
 ![Version](https://img.shields.io/badge/version-1.0-blue)
 ![Python](https://img.shields.io/badge/python-3.7+-green)
@@ -10,14 +10,17 @@ Python GUI application for jogging an **Adept Cobra 600 SCARA robot** using a ga
 
 ## 🎮 Features
 
-- **Gamepad Control**: Use PS4 or Xbox controller for intuitive jogging
-- **Deadman Safety**: Requires button hold for motion (safety feature)
-- **Real-time Control**: ~20 Hz update rate for smooth motion
-- **Dual Control Modes**:
-  - **Mode 1** (Current): Direct monitor commands via terminal
-  - **Mode 2** (Advanced): V+ jog server with checksum verification
-- **Configurable Speeds**: Adjustable XY, Z, and rotation speeds
-- **Power Management**: Enable/disable servos and calibrate from GUI
+- **Tabbed UI**: Jog, V+ File Manager, Keyframes
+- **Jogging Modes**:
+  - **Monitor Streaming**: `EXECUTE DMOVE(...)` at ~20 Hz
+  - **V+ Jog Server**: Velocity packets with CRC16 over `SERIAL(2)` at ~50 Hz
+  - **Absolute (MOVE)**: Periodic `WHERE` + `MOVE TRANS(...)` targets
+- **Inputs**: PS4/Xbox gamepad + keyboard with deadman hold
+- **Configurable Speeds**: XY, Z, and Theta sliders
+- **Power Controls**: Enable/disable servos and calibrate
+- **Always-visible Serial Monitor**: Bottom panel with Autoscroll and Auto-trim (line-based) checkboxes to prevent slowdowns
+- **V+ File Manager**: List, download, upload (`.EDIT`), delete, custom commands
+- **Keyframes**: Capture from `WHERE`, playback once or N times with delay
 
 ---
 
@@ -31,7 +34,7 @@ Python GUI application for jogging an **Adept Cobra 600 SCARA robot** using a ga
 
 ### Software
 ```bash
-pip install pyserial pygame
+pip install -r requirements.txt
 ```
 
 - Python 3.7+
@@ -50,19 +53,25 @@ pip install pyserial pygame
 2. Connect PS4/Xbox controller via USB or Bluetooth
 3. Power on robot and controller
 
-### 2. Run the Application
+### 2. Install dependencies (recommended)
 ```bash
-python cobra_jogger.py
+bash install.sh
+source .venv/bin/activate
 ```
 
-### 3. Connect and Calibrate
+### 3. Run the unified app
+```bash
+python scara_control.py
+```
+
+### 4. Connect and Calibrate
 1. Select serial port from dropdown
 2. Click **Connect**
 3. Click **ENABLE POWER**
 4. Click **CALIBRATE** (ensure clear workspace!)
 5. Adjust speed sliders to conservative values initially
 
-### 4. Start Jogging
+### 5. Start Jogging
 - **Hold RB (PS4: R1) or A button** as deadman switch
 - **Left stick**: X/Y motion
 - **Right trigger/Left trigger**: Z up/down
@@ -98,7 +107,7 @@ python cobra_jogger.py
 
 ## ⚙️ Control Modes
 
-### Mode 1: Monitor Streaming (Current Implementation)
+### Mode 1: Monitor Streaming (Direct monitor)
 
 **How it works:**
 - Python app sends `EXECUTE DMOVE(dx,dy,dz,dθ)` commands to V+ monitor
@@ -119,7 +128,7 @@ python cobra_jogger.py
 
 ---
 
-### Mode 2: V+ Jog Server with Checksum (Coming Soon)
+### Mode 2: V+ Jog Server with Checksum (Implemented)
 
 **How it works:**
 - V+ program runs on controller, reading velocity packets from SERIAL:2
@@ -137,6 +146,24 @@ python cobra_jogger.py
 - More complex setup
 
 **Recommended for:** Production use, high-speed operations, precise control
+
+---
+
+### Mode 3: Absolute Position (MOVE)
+
+**How it works:**
+- App periodically queries position with `WHERE`
+- Computes absolute target updates and sends `EXECUTE MOVE(TRANS(...))`
+
+**Pros:**
+- Uses controller's absolute motion planning
+- Soft limits handled by controller
+
+**Cons:**
+- Slightly higher overhead than incremental DMOVE
+- Requires periodic `WHERE` responses
+
+**Recommended for:** Repeatable positioning and keyframe playback
 
 #### Protocol Specification (Mode 2)
 
@@ -161,43 +188,12 @@ Total packet size: 20 bytes
 
 ---
 
-## 🖥️ Additional Tools
+## 🖥️ Integrated Tabs and Monitor Panel
 
-### V+ Program Editor ⭐ NEW!
-
-**No more 25-year-old Adept software!** Edit and upload V+ programs with a modern Python tool.
-
-```bash
-python vplus_editor.py
-```
-
-**Features:**
-- ✅ Edit V+ programs in modern text editor
-- ✅ Upload/download programs over serial
-- ✅ List and delete programs on controller
-- ✅ Real-time monitor output
-- ✅ Save/load local files
-- ✅ No legacy software required!
-
-See **[VPLUS_EDITOR_GUIDE.md](VPLUS_EDITOR_GUIDE.md)** for complete documentation.
-
-### Absolute Position Mode ⭐ NEW!
-
-**Handles soft limits better!** Like 3D printer G-code with position feedback.
-
-```bash
-python cobra_jogger_absolute.py
-```
-
-**Features:**
-- ✅ Queries robot position periodically (WHERE command)
-- ✅ Absolute positioning mode (MOVE vs DMOVE)
-- ✅ Soft limits handled by controller automatically
-- ✅ Position display in GUI
-- ✅ Smoother continuous motion
-- ✅ No command accumulation
-
-See **[POSITION_CONTROL_GUIDE.md](POSITION_CONTROL_GUIDE.md)** for technical details.
+- **Jog**: Gamepad/keyboard jogging across three modes
+- **V+ File Manager**: Edit locally, list/download/upload/delete on controller, send custom commands
+- **Keyframes**: Capture positions from `WHERE` and play them back
+- **Monitor Panel (always visible)**: Live terminal output with Clear, Autoscroll, and Auto-trim controls
 
 ---
 
@@ -304,6 +300,14 @@ In the GUI:
 
 ## 📝 Troubleshooting
 
+### Serial port cannot be opened (Linux)
+- Confirm device path: use the app's Refresh to see `/dev/ttyS*`, `/dev/ttyUSB*`, `/dev/ttyACM*`
+- Check permissions: ensure your user is in the `dialout` group
+  - `groups`
+  - If missing: `sudo usermod -aG dialout $USER` then log out/in or `newgrp dialout`
+- Check if device is busy: `fuser /dev/ttyS4` (or your device)
+- Verify correct cable (RS-232, often null-modem)
+
 ### Controller won't connect
 - Check serial cable (try null-modem adapter)
 - Verify baud rate matches controller settings
@@ -341,8 +345,7 @@ In the GUI:
 ---
 
 ## 🔮 Future Enhancements
-
-- [ ] Mode 2: V+ jog server with checksum implementation
+- [ ] Jog server packet/error statistics in UI
 - [ ] Touch probe integration for work coordinate setup
 - [ ] Position logging and playback
 - [ ] Multi-robot support
@@ -374,4 +377,4 @@ SCARA Control Project
 
 ---
 
-*Last updated: 2025-10-28*
+*Last updated: 2025-10-30*

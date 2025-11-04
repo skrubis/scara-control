@@ -1,22 +1,22 @@
-# Implementation Guide: Mode 2 V+ Jog Server
+# Implementation Guide: Unified App and V+ Jog Server
 
 This guide explains how to implement and deploy the advanced V+ Jog Server mode with CRC16 checksum validation for your Adept Cobra 600 SCARA robot.
 
 ---
 
-## 📊 Mode Comparison
+## 📊 Mode Comparison (Unified App)
 
-| Feature | Mode 1: Monitor Streaming | Mode 2: V+ Jog Server |
-|---------|--------------------------|----------------------|
-| **Setup Complexity** | ✅ Simple (no controller programming) | ⚠️ Moderate (requires V+ program) |
-| **Update Rate** | 20 Hz | 50 Hz |
-| **Latency** | 50-100ms | <10ms |
-| **Smoothness** | Good | Excellent |
-| **Error Detection** | None | CRC16 checksum |
-| **Real-time** | No | Yes (controller-side loop) |
-| **Serial Port** | Terminal (monitor) | SERIAL(2) |
-| **Baud Rate** | 9600 (default) | 115200 (recommended) |
-| **Best For** | Testing, initial setup | Production, high-speed work |
+| Feature | Mode 1: Monitor Streaming | Mode 2: V+ Jog Server | Mode 3: Absolute (MOVE) |
+|---------|---------------------------|-----------------------|---------------------------|
+| **Setup Complexity** | ✅ Simple (no controller programming) | ⚠️ Moderate (requires V+ program) | ✅ Simple (no controller programming) |
+| **Update Rate** | ~20 Hz | ~50 Hz (configurable) | ~20 Hz (depends on WHERE/MOVE cadence) |
+| **Latency** | 50–100 ms | <10 ms | 60–120 ms |
+| **Smoothness** | Good | Excellent | Good–Very good |
+| **Error Detection** | None | CRC16 checksum | None |
+| **Real-time** | No | Yes (controller loop) | No (controller plans MOVE) |
+| **Serial Port** | Terminal (monitor) | SERIAL(2) | Terminal (monitor) |
+| **Baud Rate** | 9600 (default) | 115200 (recommended) | 9600 (default) |
+| **Best For** | Testing, initial setup | Production, high-speed work | Repeatable positioning, keyframes |
 
 ---
 
@@ -94,20 +94,20 @@ To stop:
 ABORT
 ```
 
-### Step 5: Configure Python Application
+### Step 5: Configure Python Application (Unified)
 
-1. Run `cobra_jogger_v2.py`
-2. Select **"V+ Jog Server"** from the Mode dropdown
-3. Baud rate automatically changes to **115200**
-4. Select correct COM port (the one connected to SERIAL(2))
+1. Run `scara_control.py`
+2. In the Jog tab, select **"V+ Jog Server"** from the Control Mode dropdown
+3. The baud rate will automatically set to **115200**
+4. Select the correct serial device (the one connected to SERIAL(2))
 5. Click **Connect**
 
 ### Step 6: Verify Communication
 
-1. Hold deadman button (RB/R1)
-2. Gently move left stick
-3. Robot should respond smoothly
-4. Check stats display for packet count
+1. In the Jog tab, hold the deadman button (RB/R1 or SPACE on keyboard)
+2. Gently move the left stick (or arrow keys) to command motion
+3. Robot should respond smoothly at higher rate than Mode 1
+4. Observe the "Packets" counter increasing in the Jog tab
 
 **Expected behavior:**
 - Smooth, responsive motion
@@ -257,6 +257,13 @@ ser.close()
 ---
 
 ## ⚠️ Troubleshooting
+
+### Linux: Serial port permissions
+- Ensure your user is in the `dialout` group
+  - Check: `groups`
+  - Add: `sudo usermod -aG dialout $USER` then log out/in or `newgrp dialout`
+- Confirm device path: `/dev/ttyS*`, `/dev/ttyUSB*`, `/dev/ttyACM*`
+- Check if busy: `fuser /dev/ttyS4` (replace with your device)
 
 ### Problem: V+ program won't load
 
