@@ -25,6 +25,7 @@ except Exception:
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog, simpledialog
 from tkinter import scrolledtext
+from math import sqrt, copysign, atan2, cos, sin, pi
 
 def crc16_ccitt(data: bytes) -> int:
     crc = 0xFFFF
@@ -36,6 +37,137 @@ def crc16_ccitt(data: bytes) -> int:
             else:
                 crc = (crc << 1) & 0xFFFF
     return crc
+
+class Envelope:
+    RMIN = 180.0
+    RMAX = 560.0
+    BACK_W2 = 150.0
+    ZMIN = 185.0
+    ZMAX = 380.0
+    ANG_MAX_DEG = 100.0  # keep within +/- this angle around +X
+
+def clamp_abs(x, y, z, r, E=Envelope):
+    clamped = False
+    # Z window
+    z0 = z
+    z = max(E.ZMIN, min(E.ZMAX, z)); clamped |= (z != z0)
+    # rear exclusion band (when behind mast)
+    if x < 0 and abs(y) < E.BACK_W2:
+        y = copysign(E.BACK_W2, y if y != 0 else 1.0); clamped = True
+    # radial donut (scale along ray) and angular wedge clamp
+    rad2 = x*x + y*y
+    if rad2 > 1e-9:
+        rad = sqrt(rad2)
+        if rad < E.RMIN:
+            s = E.RMIN/rad; x, y = x*s, y*s; clamped = True
+            rad = E.RMIN
+        elif rad > E.RMAX:
+            s = E.RMAX/rad; x, y = x*s, y*s; clamped = True
+            rad = E.RMAX
+        # angular limit (about +X)
+        ang = atan2(y, x)
+        ang_max = (E.ANG_MAX_DEG * pi / 180.0)
+        if abs(ang) > ang_max:
+            ang = copysign(ang_max, ang)
+            x, y = rad * cos(ang), rad * sin(ang)
+            clamped = True
+    return x, y, z, r, clamped
+
+def clamp_rel_from_feedback(last_fb, dx, dy, dz, dr, E=Envelope):
+    x0, y0, z0, r0 = last_fb
+    return clamp_abs(x0+dx, y0+dy, z0+dz, r0+dr, E)
+
+class ScaraJogPad(tk.Frame):
+    def __init__(self, master, send_abs_cb, get_r_cb=lambda: 0.0, width=360, height=360, **kw):
+        super().__init__(master, **kw)
+        self.send_abs_cb = send_abs_cb
+        self.get_r_cb = get_r_cb
+        self.canvas = tk.Canvas(self, width=width, height=height, bg="#111", highlightthickness=1, highlightbackground="#555")
+        self.canvas.grid(row=0, column=0, sticky="nsew", padx=(4,6), pady=4)
+        self.zscale = tk.Scale(self, from_=Envelope.ZMAX, to=Envelope.ZMIN, orient="vertical", length=height-8)
+        self.zscale.set((Envelope.ZMIN+Envelope.ZMAX)/2)
+        self.zscale.grid(row=0, column=1, sticky="ns", padx=(0,6), pady=4)
+        self.grid_rowconfigure(0, weight=1)
+        self.grid_columnconfigure(0, weight=1)
+        pad = 10
+        self.cx = width//2
+        self.cy = height//2
+        self.scale = (min(width, height)/2 - pad) / Envelope.RMAX
+        self.fb = None
+        self.target = None
+        self.canvas.bind("<Button-1>", self._click)
+        self.canvas.bind("<B1-Motion>", self._click)
+        self._draw_static()
+        self._redraw()
+
+    def _draw_static(self):
+        c = self.canvas; s = self.scale; cx, cy = self.cx, self.cy
+        c.delete("static")
+        R = Envelope.RMAX * s
+        c.create_oval(cx-R, cy-R, cx+R, cy+R, outline="#444", width=2, tags="static")
+        r = Envelope.RMIN * s
+        c.create_oval(cx-r, cy-r, cx+r, cy+r, outline="#444", width=2, tags="static")
+        yb = Envelope.BACK_W2 * s
+        c.create_rectangle(cx-R, cy-yb, cx, cy+yb, fill="#882222", outline="", tags="static")
+        # wedge boundary lines (+/- ANG_MAX_DEG)
+        ang = Envelope.ANG_MAX_DEG * pi / 180.0
+        wx = Envelope.RMAX * cos(ang); wy = Envelope.RMAX * sin(ang)
+        p_pos = self._w2c(wx, wy)
+        p_neg = self._w2c(wx, -wy)
+        c.create_line(cx, cy, p_pos[0], p_pos[1], fill="#555", dash=(4,3), tags="static")
+        c.create_line(cx, cy, p_neg[0], p_neg[1], fill="#555", dash=(4,3), tags="static")
+        c.create_oval(cx-18, cy-18, cx+18, cy+18, fill="#888", outline="", tags="static")
+        c.create_line(cx, cy, cx+35, cy, fill="#666", width=2, tags="static")
+        c.create_line(cx, cy, cx, cy-35, fill="#666", width=2, tags="static")
+
+    def _redraw(self):
+        c = self.canvas
+        c.delete("dyn")
+        if self.fb:
+            x, y, _z, _r = self.fb
+            self._draw_arm(x, y, fill="#8fd", tags="dyn")
+        if self.target:
+            x, y, _z, _r = self.target
+            px, py = self._w2c(x, y)
+            c.create_oval(px-4, py-4, px+4, py+4, outline="#0f0", fill="", width=2, tags="dyn")
+
+    def _draw_arm(self, x, y, fill="#9cf", tags=None):
+        L1 = Envelope.RMAX * 0.5
+        L2 = L1
+        r2 = x*x + y*y
+        if r2 < 1e-6:
+            return
+        c2 = (r2 - L1*L1 - L2*L2) / (2*L1*L2)
+        c2 = max(-1.0, min(1.0, c2))
+        s2 = sqrt(max(0.0, 1.0 - c2*c2))
+        th2 = atan2(s2, c2)
+        th1 = atan2(y, x) - atan2(L2*s2, L1 + L2*c2)
+        x1 = L1 * cos(th1); y1 = L1 * sin(th1)
+        x2 = x1 + L2 * cos(th1 + th2); y2 = y1 + L2 * sin(th1 + th2)
+        p0 = self._w2c(0, 0); p1 = self._w2c(x1, y1); p2 = self._w2c(x2, y2)
+        self.canvas.create_line(p0[0], p0[1], p1[0], p1[1], p2[0], p2[1], fill=fill, width=5, capstyle="round", tags=tags)
+
+    def _click(self, ev):
+        xw, yw = self._c2w(ev.x, ev.y)
+        z = float(self.zscale.get())
+        r = float(self.get_r_cb() or 0.0)
+        xw, yw, z, r, _ = clamp_abs(xw, yw, z, r)
+        self.target = (xw, yw, z, r)
+        self._redraw()
+        try:
+            self.send_abs_cb(xw, yw, z, r)
+        except Exception:
+            pass
+
+    def _w2c(self, x, y):
+        return (self.cx + x*self.scale, self.cy - y*self.scale)
+
+    def _c2w(self, px, py):
+        return ((px - self.cx)/self.scale, -(py - self.cy)/self.scale)
+
+    def set_feedback(self, x, y, z, r):
+        self.fb = (x, y, z, r)
+        self._redraw()
 
 class SerialManager:
     def __init__(self):
@@ -579,19 +711,16 @@ class MainApp(tk.Tk):
         ttk.Label(jfrm, text="Z speed (mm/s)").grid(row=2, column=0, sticky="w")
         ttk.Scale(jfrm, from_=5, to=300, orient="horizontal", variable=self.var_z_speed).grid(row=2, column=1, sticky="we", padx=6)
         jfrm.grid_columnconfigure(1, weight=1)
-        # XY pad and Z velocity slider
+        # SCARA jog preview with click-to-move and Z slider
         padwrap = ttk.Frame(jfrm)
-        padwrap.grid(row=3, column=0, columnspan=2, sticky="w", pady=6)
-        self.xy_canvas = tk.Canvas(padwrap, width=180, height=180, bg="#222", highlightthickness=1, highlightbackground="#555")
-        self.xy_canvas.pack(side="left")
-        self.xy_canvas.bind('<Button-1>', self._xy_pad_down)
-        self.xy_canvas.bind('<B1-Motion>', self._xy_pad_drag)
-        self.xy_canvas.bind('<ButtonRelease-1>', self._xy_pad_up)
-        self._xy_pad_draw()
-        zfrm = ttk.Frame(padwrap)
-        zfrm.pack(side="left", padx=10)
-        ttk.Label(zfrm, text="Z vel").pack()
-        ttk.Scale(zfrm, from_=-1.0, to=1.0, orient="vertical", variable=self.var_z_vel).pack()
+        padwrap.grid(row=3, column=0, columnspan=4, sticky="w", pady=6)
+        def _get_r():
+            try:
+                return float(self.stream_r.get())
+            except Exception:
+                return 0.0
+        self.scara_pad = ScaraJogPad(padwrap, send_abs_cb=self._pad_send_abs, get_r_cb=_get_r, width=360, height=360)
+        self.scara_pad.pack(side="left")
 
     def _on_mode_change(self, event=None):
         pass
@@ -612,6 +741,20 @@ class MainApp(tk.Tk):
             messagebox.showinfo("Mode", "In Jog Server mode, use controller-driven motion. Switch to Monitor mode for manual commands.")
             return
         self.ser.send_line(s)
+
+    def _pad_send_abs(self, x: float, y: float, z: float, r: float):
+        if not self.ser.is_connected():
+            return
+        x, y, z, r, _ = clamp_abs(x, y, z, r)
+        line = f"{x:.2f},{y:.2f},{z:.2f},{r:.2f}"
+        if self.var_use_do.get() or not self.stream_running:
+            self.ser.send_line(f"DO MOVE TRANS({x:.2f},{y:.2f},{z:.2f},0,180,{r:.2f})")
+        else:
+            self.ser.send_line(line)
+        try:
+            self.set_status(f"Move → {line}")
+        except Exception:
+            pass
 
     # --- XY pad and jog helpers ---
     def _xy_pad_draw(self):
@@ -760,21 +903,31 @@ class MainApp(tk.Tk):
                 if not should_send:
                     continue
                 if self.var_use_do.get():
+                    cx, cy, cz, cr, _clamped = clamp_abs(self.jog_target['x'], self.jog_target['y'],
+                                                         self.jog_target['z'], self.jog_target['r'])
+                    if _clamped:
+                        try:
+                            self.set_status("CLAMPED to safe envelope")
+                        except Exception:
+                            pass
                     self.ser.send_line(
-                        f"DO MOVE TRANS({self.jog_target['x']:.2f},{self.jog_target['y']:.2f},{self.jog_target['z']:.2f},0,180,{self.jog_target['r']:.2f})"
+                        f"DO MOVE TRANS({cx:.2f},{cy:.2f},{cz:.2f},0,180,{cr:.2f})"
                     )
                 else:
                     if not self.stream_running:
                         continue
-                    # Send relative deltas to STREAM to avoid unsafe absolute near-zero moves
+                    # Send absolute clamped targets to STREAM (ABS mode)
                     if self._jog_last_sent is None:
                         self._jog_last_sent = dict(self.jog_target)
                         continue
-                    relx = self.jog_target['x'] - self._jog_last_sent['x']
-                    rely = self.jog_target['y'] - self._jog_last_sent['y']
-                    relz = self.jog_target['z'] - self._jog_last_sent['z']
-                    relr = self.jog_target['r'] - self._jog_last_sent['r']
-                    line = f"REL {relx:.2f},{rely:.2f},{relz:.2f},{relr:.2f}"
+                    cx, cy, cz, cr, _clamped = clamp_abs(self.jog_target['x'], self.jog_target['y'],
+                                                          self.jog_target['z'], self.jog_target['r'])
+                    if _clamped:
+                        try:
+                            self.set_status("CLAMPED to safe envelope")
+                        except Exception:
+                            pass
+                    line = f"{cx:.2f},{cy:.2f},{cz:.2f},{cr:.2f}"
                     self.ser.send_line(line)
                 self._jog_last_sent = dict(self.jog_target)
             except Exception:
@@ -992,37 +1145,14 @@ class MainApp(tk.Tk):
         return "\n".join([
             ".PROGRAM STREAM",
             "LOCAL $in, $tok",
-            "LOCAL REAL x, y, z, r",
-            "LOCAL p",
+            "LOCAL REAL x, y, z, r, rad2, sc, rad",
             "ATTACH (4) \"MONITOR\"",
             "TYPE \"FB READY\"",
             "10 READ (4) $in",
             "$tok = $DECODE($in, \" ,\", 0)",
             "IF $tok == \"STOP\" THEN",
-            "TYPE \"FB STOP\"",
-            "STOP",
-            "END",
-            "IF $tok == \"ABORT\" THEN",
-            "TYPE \"FB STOP\"",
-            "STOP",
-            "END",
-            "IF $tok == \"REL\" THEN",
-            "$tok = $DECODE($in, \" ,\", 1)",
-            "$tok = $DECODE($in, \" ,\", 0)",
-            "x = VAL($tok)",
-            "$tok = $DECODE($in, \" ,\", 1)",
-            "$tok = $DECODE($in, \" ,\", 0)",
-            "y = VAL($tok)",
-            "$tok = $DECODE($in, \" ,\", 1)",
-            "$tok = $DECODE($in, \" ,\", 0)",
-            "z = VAL($tok)",
-            "$tok = $DECODE($in, \" ,\", 1)",
-            "$tok = $DECODE($in, \" ,\", 0)",
-            "r = VAL($tok)",
-            "HERE p",
-            "MOVE p:TRANS(x, y, z, 0, 0, r)",
-            "TYPE \"FB REL \", x, \",\", y, \",\", z, \",\", r",
-            "GOTO 10",
+            "  TYPE \"FB STOP\"",
+            "  STOP",
             "END",
             "x = VAL($tok)",
             "$tok = $DECODE($in, \" ,\", 1)",
@@ -1034,6 +1164,47 @@ class MainApp(tk.Tk):
             "$tok = $DECODE($in, \" ,\", 1)",
             "$tok = $DECODE($in, \" ,\", 0)",
             "r = VAL($tok)",
+            "IF z < 185 THEN",
+            "  z = 185",
+            "END",
+            "IF z > 380 THEN",
+            "  z = 380",
+            "END",
+            "IF x < 0 THEN",
+            "  IF y >= 0 THEN",
+            "    IF y < 150 THEN",
+            "      y = 150",
+            "    END",
+            "  END",
+            "  IF y < 0 THEN",
+            "    IF -y < 150 THEN",
+            "      y = -150",
+            "    END",
+            "  END",
+            "END",
+            "rad2 = x*x + y*y",
+            "IF rad2 > 0.001 THEN",
+            "  IF rad2 < 32400 THEN",
+            "    sc = 180 / SQRT(rad2)",
+            "    x = x * sc",
+            "    y = y * sc",
+            "  END",
+            "  IF rad2 > 313600 THEN",
+            "    sc = 560 / SQRT(rad2)",
+            "    x = x * sc",
+            "    y = y * sc",
+            "  END",
+            "  rad2 = x*x + y*y",
+            "  rad = SQRT(rad2)",
+            "  IF x < (-0.173648 * rad) THEN",
+            "    x = -0.173648 * rad",
+            "    IF y >= 0 THEN",
+            "      y = SQRT(rad2 - x*x)",
+            "    ELSE",
+            "      y = -SQRT(rad2 - x*x)",
+            "    END",
+            "  END",
+            "END",
             "MOVE TRANS(x, y, z, 0, 180, r)",
             "TYPE \"FB \", x, \",\", y, \",\", z, \",\", r",
             "GOTO 10",
@@ -1102,10 +1273,13 @@ class MainApp(tk.Tk):
             messagebox.showwarning("Not connected", "Connect to serial first")
             return
         # Send a line of four numbers; the STREAM program reads them
-        x = float(self.stream_x.get())
-        y = float(self.stream_y.get())
-        z = float(self.stream_z.get())
-        r = float(self.stream_r.get())
+        x, y, z, r = map(float, (self.stream_x.get(), self.stream_y.get(), self.stream_z.get(), self.stream_r.get()))
+        x, y, z, r, _clamped = clamp_abs(x, y, z, r)
+        if _clamped:
+            try:
+                self.set_status("CLAMPED to safe envelope")
+            except Exception:
+                pass
         if self.var_use_do.get():
             self.ser.send_line(f"DO MOVE TRANS({x:.2f},{y:.2f},{z:.2f},0,180,{r:.2f})")
         else:
@@ -1193,10 +1367,13 @@ class MainApp(tk.Tk):
         if not self.ser.is_connected():
             messagebox.showwarning("Not connected", "Connect to serial first")
             return
-        x = float(self.leg_x.get())
-        y = float(self.leg_y.get())
-        z = float(self.leg_z.get())
-        r = float(self.leg_r.get())
+        x, y, z, r = map(float, (self.leg_x.get(), self.leg_y.get(), self.leg_z.get(), self.leg_r.get()))
+        x, y, z, r, _clamped = clamp_abs(x, y, z, r)
+        if _clamped:
+            try:
+                self.set_status("CLAMPED to safe envelope")
+            except Exception:
+                pass
         # Legacy flow: define point 'a' with 6 fields x,y,z,yaw,pitch,roll and then DO MOVE a
         # We mimic the old script's orientation: yaw=0.00, pitch=180, roll=r
         self.ser.send_line("POINT a")
@@ -1229,6 +1406,12 @@ class MainApp(tk.Tk):
         r = askf("Legacy Move", "R (deg):", pos.get('theta', 180.0))
         if r is None:
             return
+        x, y, z, r, _clamped = clamp_abs(x, y, z, r)
+        if _clamped:
+            try:
+                self.set_status("CLAMPED to safe envelope")
+            except Exception:
+                pass
         # Send the legacy sequence
         self.ser.send_line("POINT a")
         time.sleep(0.05)
@@ -1296,6 +1479,8 @@ class MainApp(tk.Tk):
                             self.stream_y.set(fy)
                             self.stream_z.set(fz)
                             self.stream_r.set(fr)
+                            if hasattr(self, 'scara_pad') and self.scara_pad:
+                                self.scara_pad.set_feedback(fx, fy, fz, fr)
                         except Exception:
                             pass
                     self.after(0, upd)
